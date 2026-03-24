@@ -6,6 +6,7 @@ import {
     type ConnectivityCheckResult,
     type ConnectivityErrorType,
 } from '@/lib/stellar/endpoint-connectivity';
+import { validateNetwork, deriveNetworkConfig, type StellarNetwork } from '@/lib/stellar/network-validation';
 
 // ── Zod schema (single source of truth) ──────────────────────────────────────
 
@@ -42,6 +43,19 @@ const TESTNET_HORIZON = 'https://horizon-testnet.stellar.org';
 function businessRuleErrors(config: CustomizationConfig): ValidationError[] {
     const errors: ValidationError[] = [];
     const { network, horizonUrl, contractAddresses } = config.stellar;
+
+    // Validate network selection is supported
+    const networkValidation = validateNetwork(network);
+    if (!networkValidation.valid) {
+        errors.push({
+            field: 'stellar.network',
+            message: networkValidation.reason,
+            code: networkValidation.code,
+        });
+        // If network is invalid, we can't validate further network-dependent rules
+        // Return early to avoid cascading errors
+        return errors;
+    }
 
     if (network === 'mainnet' && horizonUrl === TESTNET_HORIZON) {
         errors.push({
@@ -181,4 +195,28 @@ export async function validateStellarEndpoints(
         sorobanRpc: sorobanResult,
         errors: errors.length > 0 ? errors : undefined,
     };
+}
+
+// ── Network Configuration Derivation ──────────────────────────────────────────
+
+export interface DerivedNetworkConfig {
+    network: StellarNetwork;
+    horizonUrl: string;
+    networkPassphrase: string;
+    sorobanRpcUrl: string;
+}
+
+/**
+ * Derive downstream network configuration from a validated config.
+ * Ensures all network settings are consistent and available for code generation.
+ * 
+ * Should be called after validateCustomizationConfig returns valid.
+ * 
+ * @param config - Validated customization config
+ * @returns Derived network configuration with all required fields
+ */
+export function deriveNetworkConfigFromCustomization(config: CustomizationConfig): DerivedNetworkConfig {
+    // Network has already been validated by validateCustomizationConfig
+    const network = config.stellar.network as StellarNetwork;
+    return deriveNetworkConfig(network);
 }
