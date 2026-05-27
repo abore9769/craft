@@ -46,6 +46,6 @@
   "allowConsoleColors": true,
   "dryRun": false,
   "force": false,
-  "incremental": false,
+  "incremental": true,
   "incrementalFile": ".stryker-incremental.json"
 }

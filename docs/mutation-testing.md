@@ -96,14 +96,32 @@ Compile errors: 0
 
 **Target Score**: 80%+
 
+**Baseline Score (Issue #537)**: 80%+ achieved
+
 **Key Mutations to Catch:**
-- Deployment status progression
+- Deployment status progression (pending → generating → validating → signing → creating_repo → pushing_code → deploying → verifying_contract → completed/failed)
+- Invalid state transitions (e.g., pending → completed should fail)
 - GitHub/Vercel API calls
-- Rollback logic
+- Rollback logic on failure
 - Rate limit handling
 - Database transaction management
+- Syntax validation hook
+- Artifact signing and verification
+- Circular dependency detection
 
 **Tests**: `deployment-pipeline.service.test.ts`
+
+**Boundary-Value Tests Added (Issue #537):**
+- All invalid state transitions are rejected
+- Terminal states (completed, failed) have no outgoing transitions
+- Non-terminal states have at least one valid transition
+- All states are reachable from pending
+- No cycles in state transition graph
+- Status persistence on every update
+- Error logging at each failure point
+- Rollback integration with DeploymentUpdateService
+- Syntax validation between generation and repo creation
+- Artifact verification before push
 
 ## Improving Mutation Score
 
