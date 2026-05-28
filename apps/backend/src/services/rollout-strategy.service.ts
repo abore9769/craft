@@ -11,6 +11,31 @@ export const ROLLBACK_ERROR_RATE_THRESHOLD = 0.05;
 export const ROLLBACK_LATENCY_THRESHOLD_MS = 2_000;
 export const DEFAULT_CANARY_STEPS = [5, 25, 50] as const;
 
+interface FlagDecisionCacheEntry {
+    decision: boolean;
+    timestamp: number;
+}
+
+const FLAG_CACHE_TTL_MS = 5_000;
+const MAX_FLAG_CACHE_ENTRIES = 10_000;
+const flagEvaluationCache = new Map<string, FlagDecisionCacheEntry>();
+
+function buildFlagCacheKey(userId: string, flagKey: string): string {
+    return `${userId}:${flagKey}`;
+}
+
+function invalidateFlagCache(flagKey?: string): void {
+    if (flagKey) {
+        for (const [key] of flagEvaluationCache) {
+            if (key.endsWith(`:${flagKey}`)) {
+                flagEvaluationCache.delete(key);
+            }
+        }
+    } else {
+        flagEvaluationCache.clear();
+    }
+}
+
 export class RolloutEngine {
     private _canaryPercent = 0;
     private _status: RolloutStatus = 'pending';
@@ -20,6 +45,30 @@ export class RolloutEngine {
         private readonly stable: DeploymentVersion,
         private readonly candidate: DeploymentVersion,
     ) {}
+
+    evaluateFlagWithCache(userId: string, flagKey: string, evaluator: () => boolean): boolean {
+        const cacheKey = buildFlagCacheKey(userId, flagKey);
+        const now = Date.now();
+
+        const cached = flagEvaluationCache.get(cacheKey);
+        if (cached && now - cached.timestamp < FLAG_CACHE_TTL_MS) {
+            return cached.decision;
+        }
+
+        const decision = evaluator();
+
+        if (flagEvaluationCache.size >= MAX_FLAG_CACHE_ENTRIES) {
+            const firstKey = flagEvaluationCache.keys().next().value;
+            if (firstKey) flagEvaluationCache.delete(firstKey);
+        }
+
+        flagEvaluationCache.set(cacheKey, { decision, timestamp: now });
+        return decision;
+    }
+
+    clearFlagCache(flagKey?: string): void {
+        invalidateFlagCache(flagKey);
+    }
 
     get status(): RolloutStatus {
         return this._status;

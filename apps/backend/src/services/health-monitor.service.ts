@@ -1,37 +1,33 @@
 import { createClient } from '@/lib/supabase/server';
 import { analyticsService } from './analytics.service';
 
-/**
- * HealthMonitorService — dependency graph
- *
- * External dependencies checked during health monitoring:
- *
- *   ┌─────────────────────────────────────────────────────────┐
- *   │                  HealthMonitorService                   │
- *   │                                                         │
- *   │  checkDeploymentHealth(id)                              │
- *   │    ├── [DB] Supabase → deployments.deployment_url       │
- *   │    ├── [NET] fetch(deployment_url) — HEAD request        │
- *   │    │         (URL may point to Vercel, Stellar, Stripe,  │
- *   │    │          or any monitored service endpoint)         │
- *   │    └── [SVC] analyticsService.recordUptimeCheck()       │
- *   │                                                         │
- *   │  checkAllDeployments()                                  │
- *   │    ├── [DB] Supabase → deployments (status+is_active)   │
- *   │    └── → checkDeploymentHealth() × N                    │
- *   │                                                         │
- *   │  monitorDeployment(id)                                  │
- *   │    ├── → checkDeploymentHealth()                        │
- *   │    ├── [DB] Supabase → deployments.user_id              │
- *   │    └── → notifyDowntime()  [console / future webhook]   │
- *   └─────────────────────────────────────────────────────────┘
- *
- * Failure modes:
- *   - Database unavailable  → isHealthy: false, error set
- *   - Network timeout       → isHealthy: false, error: timeout message
- *   - Non-2xx response      → isHealthy: false, statusCode set
- *   - Analytics write fails → health result still returned (best-effort)
- */
+export interface PoolMetrics {
+    activeConnections: number;
+    idleConnections: number;
+    waitQueueLength: number;
+    totalConnections: number;
+    utilizationPercent: number;
+    averageWaitTimeMs: number;
+}
+
+interface PoolMetricsInternal {
+    activeConnections: number;
+    idleConnections: number;
+    waitQueueLength: number;
+    waitTimes: number[];
+    lastSampled: number;
+}
+
+const POOL_ALERT_THRESHOLD = 0.8;
+const POOL_METRICS_WINDOW_MS = 60_000;
+const poolMetrics: PoolMetricsInternal = {
+    activeConnections: 0,
+    idleConnections: 0,
+    waitQueueLength: 0,
+    waitTimes: [],
+    lastSampled: Date.now(),
+};
+
 export class HealthMonitorService {
     /**
      * Check deployment health
@@ -160,6 +156,77 @@ export class HealthMonitorService {
                 await this.notifyDowntime(deploymentId, deployment.user_id);
             }
         }
+    }
+
+    /**
+     * Record connection pool metrics
+     */
+    recordPoolMetrics(
+        activeConnections: number,
+        idleConnections: number,
+        waitQueueLength: number,
+        waitTimeMs: number
+    ): void {
+        poolMetrics.activeConnections = activeConnections;
+        poolMetrics.idleConnections = idleConnections;
+        poolMetrics.waitQueueLength = waitQueueLength;
+        poolMetrics.waitTimes.push(waitTimeMs);
+        poolMetrics.lastSampled = Date.now();
+
+        if (poolMetrics.waitTimes.length > 1000) {
+            poolMetrics.waitTimes = poolMetrics.waitTimes.slice(-1000);
+        }
+    }
+
+    /**
+     * Get current pool health metrics
+     */
+    getPoolMetrics(): PoolMetrics {
+        const totalConnections = poolMetrics.activeConnections + poolMetrics.idleConnections;
+        const utilizationPercent = totalConnections > 0
+            ? (poolMetrics.activeConnections / totalConnections) * 100
+            : 0;
+
+        const averageWaitTimeMs = poolMetrics.waitTimes.length > 0
+            ? poolMetrics.waitTimes.reduce((a, b) => a + b, 0) / poolMetrics.waitTimes.length
+            : 0;
+
+        return {
+            activeConnections: poolMetrics.activeConnections,
+            idleConnections: poolMetrics.idleConnections,
+            waitQueueLength: poolMetrics.waitQueueLength,
+            totalConnections,
+            utilizationPercent,
+            averageWaitTimeMs,
+        };
+    }
+
+    /**
+     * Check if pool health is degraded
+     */
+    isPoolHealthDegraded(): boolean {
+        const metrics = this.getPoolMetrics();
+        return metrics.utilizationPercent >= POOL_ALERT_THRESHOLD * 100 ||
+               metrics.waitQueueLength > 10 ||
+               metrics.averageWaitTimeMs > 1000;
+    }
+
+    /**
+     * Get complete health status including pool metrics
+     */
+    async getSystemHealth(): Promise<{
+        status: 'healthy' | 'degraded' | 'unhealthy';
+        timestamp: number;
+        poolMetrics: PoolMetrics;
+    }> {
+        const metrics = this.getPoolMetrics();
+        const isDegraded = this.isPoolHealthDegraded();
+
+        return {
+            status: isDegraded ? 'degraded' : 'healthy',
+            timestamp: Date.now(),
+            poolMetrics: metrics,
+        };
     }
 }
 

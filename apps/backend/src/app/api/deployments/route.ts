@@ -10,6 +10,20 @@ import {
 } from '@/lib/customization/validate';
 import { withIdempotency } from '@/lib/api/idempotency';
 
+function encodeCursor(createdAt: string, id: string): string {
+  return Buffer.from(`${createdAt}:${id}`).toString('base64');
+}
+
+function decodeCursor(cursor: string): { createdAt: string; id: string } | null {
+  try {
+    const decoded = Buffer.from(cursor, 'base64').toString('utf-8');
+    const [createdAt, id] = decoded.split(':');
+    return createdAt && id ? { createdAt, id } : null;
+  } catch {
+    return null;
+  }
+}
+
 type RequestBody = {
   templateId: string;
   customizationConfig?: unknown;
@@ -40,12 +54,38 @@ const deploymentRouter = new ApiVersionRouter({
 // GET /api/deployments — list user's deployments (v1)
 deploymentRouter.register('GET', {
   supportedVersions: ['v1'],
-  handler: async (_req: NextRequest, { supabase, user }: any) => {
-    const { data: deployments, error } = await supabase
+  handler: async (req: NextRequest, { supabase, user }: any) => {
+    const url = new URL(req.url);
+    const cursor = url.searchParams.get('cursor');
+    const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '20'), 100);
+    const direction = url.searchParams.get('direction') ?? 'next';
+
+    let query = supabase
       .from('deployments')
       .select('id, name, status, template_id, created_at, updated_at, deployed_at, deployment_url')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(limit + 1);
+
+    if (cursor) {
+      const decoded = decodeCursor(cursor);
+      if (!decoded) {
+        return NextResponse.json(
+          { error: 'Invalid cursor' },
+          { status: 400 },
+        );
+      }
+
+      if (direction === 'prev') {
+        query = query.gt('created_at', decoded.createdAt)
+          .or(`created_at.eq.${decoded.createdAt},id.gt.${decoded.id}`);
+      } else {
+        query = query.lt('created_at', decoded.createdAt)
+          .or(`created_at.eq.${decoded.createdAt},id.lt.${decoded.id}`);
+      }
+    }
+
+    const { data: deployments, error } = await query;
 
     if (error) {
       return NextResponse.json(
@@ -54,8 +94,18 @@ deploymentRouter.register('GET', {
       );
     }
 
+    const items = deployments ?? [];
+    const hasMore = items.length > limit;
+    const pageItems = hasMore ? items.slice(0, limit) : items;
+
+    const nextCursor = pageItems.length > 0
+      ? encodeCursor(pageItems[pageItems.length - 1].created_at, pageItems[pageItems.length - 1].id)
+      : null;
+
+    const prevCursor = cursor ?? null;
+
     return NextResponse.json({
-      deployments: (deployments ?? []).map((d: any) => ({
+      deployments: pageItems.map((d: any) => ({
         id: d.id,
         name: d.name,
         status: d.status,
@@ -65,6 +115,12 @@ deploymentRouter.register('GET', {
         deployedAt: d.deployed_at,
         deploymentUrl: d.deployment_url,
       })),
+      pagination: {
+        nextCursor: hasMore ? nextCursor : null,
+        prevCursor,
+        hasMore,
+        limit,
+      },
     });
   },
 });

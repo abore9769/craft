@@ -13,6 +13,30 @@ export type InvokeContractResult<T = SorobanRpc.Api.SimulateTransactionResponse>
     | { ok: true; result: T }
     | { ok: false; error: AppError };
 
+export interface AbiVersionInfo {
+    major: number;
+    minor: number;
+    patch: number;
+}
+
+export interface AbiCompatibilityResult {
+    compatible: boolean;
+    contractAbi: AbiVersionInfo;
+    networkSupportedVersions: AbiVersionInfo[];
+    error?: string;
+}
+
+export const SUPPORTED_ABI_VERSIONS: Record<string, AbiVersionInfo[]> = {
+    mainnet: [
+        { major: 20, minor: 0, patch: 0 },
+        { major: 21, minor: 0, patch: 0 },
+    ],
+    testnet: [
+        { major: 20, minor: 0, patch: 0 },
+        { major: 21, minor: 0, patch: 0 },
+    ],
+};
+
 const SOROBAN_RPC_URLS = {
     mainnet: 'https://soroban-mainnet.stellar.org',
     testnet: 'https://soroban-testnet.stellar.org',
@@ -261,4 +285,85 @@ export async function invokeContractMethod(
             },
         };
     }
+}
+
+function parseAbiVersion(versionString: string): AbiVersionInfo | null {
+    const match = versionString.match(/^(\d+)\.(\d+)\.(\d+)$/);
+    if (!match) return null;
+    return {
+        major: parseInt(match[1], 10),
+        minor: parseInt(match[2], 10),
+        patch: parseInt(match[3], 10),
+    };
+}
+
+function detectContractAbiVersion(contractSpec: any): AbiVersionInfo | null {
+    if (!contractSpec) return null;
+
+    if (typeof contractSpec.version === 'string') {
+        return parseAbiVersion(contractSpec.version);
+    }
+
+    if (typeof contractSpec.contractAbiVersion === 'string') {
+        return parseAbiVersion(contractSpec.contractAbiVersion);
+    }
+
+    if (contractSpec.abiVersion && typeof contractSpec.abiVersion === 'object') {
+        return {
+            major: contractSpec.abiVersion.major ?? 0,
+            minor: contractSpec.abiVersion.minor ?? 0,
+            patch: contractSpec.abiVersion.patch ?? 0,
+        };
+    }
+
+    return null;
+}
+
+function isAbiVersionCompatible(contractAbi: AbiVersionInfo, supported: AbiVersionInfo[]): boolean {
+    return supported.some(
+        (v) => v.major === contractAbi.major && v.minor === contractAbi.minor
+    );
+}
+
+/**
+ * Validates that a contract ABI version is compatible with the target network.
+ * @param contractSpec - The contract specification object
+ * @param network - The network name ('mainnet' or 'testnet')
+ * @returns AbiCompatibilityResult indicating compatibility
+ */
+export function validateContractAbiVersion(
+    contractSpec: any,
+    network: string = config.stellar.network
+): AbiCompatibilityResult {
+    const detectedAbi = detectContractAbiVersion(contractSpec);
+    const supportedVersions = SUPPORTED_ABI_VERSIONS[network] ?? [];
+
+    if (!detectedAbi) {
+        return {
+            compatible: false,
+            contractAbi: { major: 0, minor: 0, patch: 0 },
+            networkSupportedVersions: supportedVersions,
+            error: 'Unable to detect contract ABI version',
+        };
+    }
+
+    const compatible = isAbiVersionCompatible(detectedAbi, supportedVersions);
+
+    if (!compatible) {
+        const supportedStr = supportedVersions
+            .map((v) => `${v.major}.${v.minor}.${v.patch}`)
+            .join(', ');
+        return {
+            compatible: false,
+            contractAbi: detectedAbi,
+            networkSupportedVersions: supportedVersions,
+            error: `Contract ABI version ${detectedAbi.major}.${detectedAbi.minor}.${detectedAbi.patch} is not supported on ${network}. Supported versions: ${supportedStr}`,
+        };
+    }
+
+    return {
+        compatible: true,
+        contractAbi: detectedAbi,
+        networkSupportedVersions: supportedVersions,
+    };
 }
