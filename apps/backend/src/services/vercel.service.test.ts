@@ -1114,6 +1114,144 @@ describe('VercelService — getDeploymentLogs', () => {
     });
 });
 
+// ── Token scope validation (Issue #648) ──────────────────────────────────────
+
+describe('Token scope validation', () => {
+    beforeEach(() => {
+        process.env.VERCEL_TOKEN = 'test_token';
+        delete process.env.VERCEL_TEAM_ID;
+    });
+
+    afterEach(() => {
+        delete process.env.VERCEL_TOKEN;
+        delete process.env.VERCEL_TEAM_ID;
+    });
+
+    describe('validateTokenScopes', () => {
+        it('returns valid when token has required scopes', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['projects:read', 'deployments:write', 'teams:read'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+            expect(result.scopes).toContain('deployments:write');
+        });
+
+        it('returns invalid when token is missing deployment write scope', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['projects:read', 'teams:read'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.missingScope).toBe('deployments:write');
+            expect(result.error).toMatch(/deployment/i);
+        });
+
+        it('returns invalid when team token is missing team scope', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_abc123';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['deployments:write', 'projects:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.missingScope).toBe('team');
+            expect(result.error).toMatch(/team scope/i);
+        });
+
+        it('returns valid when team token has team scope', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_abc123';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['teams:write', 'deployments:write', 'projects:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+        });
+
+        it('handles API errors gracefully', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(401, { error: { message: 'Unauthorized' } }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.error).toBeDefined();
+        });
+
+        it('handles network errors gracefully', async () => {
+            const { svc, mockFetch } = makeService();
+
+            mockFetch.mockRejectedValueOnce(new Error('Network timeout'));
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(false);
+            expect(result.error).toMatch(/Network timeout/);
+        });
+
+        it('accepts alternative scope names for team', async () => {
+            const { svc, mockFetch } = makeService();
+            process.env.VERCEL_TEAM_ID = 'team_xyz';
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(200, {
+                    user: { email: 'user@example.com' },
+                    scopes: ['team:manage', 'deployments:write'],
+                }),
+            );
+
+            const result = await svc.validateTokenScopes();
+
+            expect(result.valid).toBe(true);
+        });
+
+        it('never logs token values', async () => {
+            const { svc, mockFetch } = makeService();
+            const warnSpy = vi.spyOn(console, 'warn');
+
+            mockFetch.mockResolvedValueOnce(
+                makeResponse(401, { error: { message: 'Unauthorized' } }),
+            );
+
+            await svc.validateTokenScopes();
+
+            // Verify that token value is never logged
+            expect(warnSpy).not.toHaveBeenCalledWith(expect.stringContaining('test_token'));
+            warnSpy.mockRestore();
+        });
+    });
+});
+
 // ── Blue-green alias promotion (Issue #645) ──────────────────────────────────
 
 describe('Blue-green alias promotion', () => {
