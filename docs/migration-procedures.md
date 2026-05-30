@@ -1,6 +1,6 @@
 # Template Version Migration Procedures
 
-This document outlines the standard procedures for migrating existing deployments to new template versions within the CRAFT platform.
+This document outlines the standard procedures for migrating existing deployments to new template versions within the CRAFT platform, and for promoting Soroban contracts from testnet to mainnet.
 
 ## Overview
 
